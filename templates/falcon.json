@@ -1,0 +1,5 @@
+{
+    "description": "Prompt Template utilized in the h2oGPT falcon 40B model(https://huggingface.co/h2oai/h2ogpt-gm-oasst1-en-2048-falcon-40b-v2)",
+    "prompt": "<s><|prompt|>{prompt}</s><|answer|>",
+    "response_split": "<|answer|>"    
+}

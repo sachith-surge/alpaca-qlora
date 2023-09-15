@@ -277,28 +277,27 @@ def train(
 
     def generate_and_tokenize_prompt(data_point):
         full_prompt = prompter.generate_prompt(
-            data_point["instruction"],
-            data_point["input"],
-            data_point["output"],
+            data_point["prompt"],
+            data_point["response"],
         )
         tokenized_full_prompt = tokenize(full_prompt)
-        if not train_on_inputs:
-            user_prompt = prompter.generate_prompt(
-                data_point["instruction"], data_point["input"]
-            )
-            tokenized_user_prompt = tokenize(
-                user_prompt, add_eos_token=add_eos_token
-            )
-            user_prompt_len = len(tokenized_user_prompt["input_ids"])
+        # if not train_on_inputs:
+        #     user_prompt = prompter.generate_prompt(
+        #         data_point["instruction"], data_point["input"]
+        #     )
+        #     tokenized_user_prompt = tokenize(
+        #         user_prompt, add_eos_token=add_eos_token
+        #     )
+        #     user_prompt_len = len(tokenized_user_prompt["input_ids"])
 
-            if add_eos_token:
-                user_prompt_len -= 1
+        #     if add_eos_token:
+        #         user_prompt_len -= 1
 
-            tokenized_full_prompt["labels"] = [
-                -100
-            ] * user_prompt_len + tokenized_full_prompt["labels"][
-                user_prompt_len:
-            ]  # could be sped up, probably
+        #     tokenized_full_prompt["labels"] = [
+        #         -100
+        #     ] * user_prompt_len + tokenized_full_prompt["labels"][
+        #         user_prompt_len:
+        #     ]  # could be sped up, probably
         return tokenized_full_prompt
 
     if isinstance(model, RwkvForCausalLM):
@@ -321,6 +320,7 @@ def train(
         data = load_dataset("json", data_files=data_path)
     else:
         data = load_dataset(data_path)
+        data = data.filter(lambda x: x['gpt4_status'] == "Accept")
 
     if resume_from_checkpoint:
         # Check the available weights and load them
@@ -380,7 +380,7 @@ def train(
             eval_steps=100 if val_set_size > 0 else None,
             save_steps=100,
             output_dir=output_dir,
-            save_total_limit=3,
+            # save_total_limit=3,
             #load_best_model_at_end=True if val_set_size > 0 else False,
             load_best_model_at_end=False,
             ddp_find_unused_parameters=False if ddp else None,
