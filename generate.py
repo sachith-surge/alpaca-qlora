@@ -47,8 +47,7 @@ def main(
         base_model
     ), "Please specify a --base_model, e.g. --base_model='openlm-research/open_llama_3b_600bt_preview'"
 
-    prompter = Prompter(prompt_template)
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
     if device == "cuda":
         if use_scaled_rope:
             from experiments.llama_rope_scaled_monkey_patch import replace_llama_rope_with_scaled_rope
@@ -156,8 +155,8 @@ def main(
         model = torch.compile(model)
 
     def evaluate(
+        system,
         instruction,
-        input=None,
         temperature=0.1,
         top_p=0.75,
         top_k=40,
@@ -166,7 +165,14 @@ def main(
         stream_output=False,
         **kwargs,
     ):
-        prompt = prompter.generate_prompt(instruction, input)
+        if system:
+            prompt_template = "orca"
+        else:
+            prompt_template = "alpaca_modified"
+        
+        prompter = Prompter(prompt_template)
+        
+        prompt = prompter.generate_prompt(system=system, instruction=instruction)
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(device)
         generation_config = GenerationConfig(
@@ -234,10 +240,14 @@ def main(
         inputs=[
             gr.components.Textbox(
                 lines=2,
-                label="Instruction",
-                placeholder="Tell me about alpacas.",
+                label="System Prompt",
+                placeholder="Write your system prompt here.",
             ),
-            gr.components.Textbox(lines=2, label="Input", placeholder="none"),
+            gr.components.Textbox(
+                lines=2,
+                label="Instruction",
+                placeholder="Write your instruction here.",
+            ),
             gr.components.Slider(
                 minimum=0, maximum=1, value=0.1, label="Temperature"
             ),
@@ -261,8 +271,8 @@ def main(
                 label="Output",
             )
         ],
-        title="🦙🌲 Alpaca-QLoRA",
-        description="Instruct-tune Open LLaMA on consumer hardware using QLoRA",  # noqa: E501
+        title="Open-Bezoar | LaMini-LM Checkpoint",
+        description="Instruct-tune Open LLaMA on LaMini-LM dataset using QLoRA",  # noqa: E501
     ).queue().launch(server_name="0.0.0.0", share=share_gradio)
     # Old testing code follows.
 

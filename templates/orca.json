@@ -1,0 +1,5 @@
+{
+    "description": "Orca template",
+    "prompt": "### System:\n{system}\n### Instruction:\n{instruction}\n### Response:",
+    "response_split": "### Response:"
+}
