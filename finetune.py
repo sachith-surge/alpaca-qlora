@@ -321,7 +321,7 @@ def train(
     else:
         data = load_dataset(data_path).filter(lambda x: x['gpt4_status'] == "Accept")
     
-    val_set_size = int(0.2 * data.num_rows) if val_set_size < 0 else val_set_size
+    val_set_size = int(0.2 * data['train'].num_rows) if val_set_size < 0 else val_set_size
 
     if resume_from_checkpoint:
         # Check the available weights and load them
