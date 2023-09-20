@@ -12,10 +12,6 @@ class Prompter(object):
 
     def __init__(self, template_name: str = "", verbose: bool = False):
         self._verbose = verbose
-        
-        if not template_name:
-            # Enforce the default here, so the constructor can be called with '' and will not break.
-            template_name = "alpaca"
             
         file_name = osp.join("templates", f"{template_name}.json")
         if not osp.exists(file_name):
@@ -37,21 +33,19 @@ class Prompter(object):
         # returns the full prompt from instruction and optional input
         # if a label (=response, =output) is provided, it's also appended.
         
-        if system:
-            res = self.template["prompt"].format(
-                system=system,
-                instruction=instruction
-            )
-        else:
-            res = self.template["prompt"].format(instruction=instruction)
+        res = self.template["prompt"].format(
+            system=system,
+            instruction=instruction
+        )
         
         if label:
             res = f"{res}{label}"
         if self._verbose:
             print(res)
-        
-        print(res)
+
         return res
 
     def get_response(self, output: str) -> str:
-        return output.split(self.template["response_split"])[1].strip()
+        return output \
+            .split(self.template["response_split"])[1].strip() \
+            .split(self.template['prompt_begin'])[0].strip()

@@ -95,7 +95,7 @@ def train(
     num_epochs: int = 3,
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
-    val_set_size: int = 2000,
+    val_set_size: int = -1,
     # lora hyperparams
     lora_r: int = 8,
     lora_alpha: int = 16,
@@ -114,7 +114,7 @@ def train(
     wandb_watch: str = "",  # options: false | gradients | all
     wandb_log_model: str = "",  # options: false | true
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
-    prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
+    prompt_template_name: str = "alpaca_modified",  # The prompt template to use, will default to alpaca.
     # experimental
     use_landmark: bool = False,
     use_rope_scaled: bool = False,
@@ -130,7 +130,7 @@ def train(
             f"num_epochs: {num_epochs}\n"
             f"learning_rate: {learning_rate}\n"
             f"cutoff_len: {cutoff_len}\n"
-            f"val_set_size: {val_set_size}\n"
+            f"val_set_size: {val_set_size if val_set_size >= 0 else 'Calculated later based on dataset size'}\n"
             f"lora_r: {lora_r}\n"
             f"lora_alpha: {lora_alpha}\n"
             f"lora_dropout: {lora_dropout}\n"
@@ -319,8 +319,9 @@ def train(
     if data_path.endswith(".json") or data_path.endswith(".jsonl"):
         data = load_dataset("json", data_files=data_path)
     else:
-        data = load_dataset(data_path)
-        data = data.filter(lambda x: x['gpt4_status'] == "Accept")
+        data = load_dataset(data_path).filter(lambda x: x['gpt4_status'] == "Accept")
+    
+    val_set_size = int(0.2 * data.numrows) if val_set_size < 0 else val_set_size
 
     if resume_from_checkpoint:
         # Check the available weights and load them
@@ -377,12 +378,12 @@ def train(
             optim="paged_adamw_8bit",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
-            eval_steps=100 if val_set_size > 0 else None,
-            save_steps=100,
+            eval_steps=10 if val_set_size > 0 else None,
+            save_steps=10,
             output_dir=output_dir,
             # save_total_limit=3,
             #load_best_model_at_end=True if val_set_size > 0 else False,
-            load_best_model_at_end=False,
+            load_best_model_at_end=True,
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if use_wandb else None,
