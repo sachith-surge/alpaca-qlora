@@ -277,8 +277,9 @@ def train(
 
     def generate_and_tokenize_prompt(data_point):
         full_prompt = prompter.generate_prompt(
-            data_point["instruction"],
-            data_point["response"],
+            system="",
+            instruction=data_point["instruction"],
+            label=data_point["response"],
         )
         tokenized_full_prompt = tokenize(full_prompt)
         # if not train_on_inputs:
