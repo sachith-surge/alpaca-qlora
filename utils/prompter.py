@@ -33,6 +33,9 @@ class Prompter(object):
         # returns the full prompt from instruction and optional input
         # if a label (=response, =output) is provided, it's also appended.
         
+        if not system:
+            system = self.template['default_system_prompt']
+
         res = self.template["prompt"].format(
             system=system,
             instruction=instruction

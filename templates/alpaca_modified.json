@@ -1,6 +1,7 @@
 {
-    "description": "Modified Alpaca legacy template",
+    "description": "Modified alpaca legacy template",
     "prompt": "### System:\n{system}\n\n### Instruction:\n{instruction}\n\n### Response:",
+    "default_system_prompt": "Below is an instruction that describes a task, optionally paired with an input that provides further context following that instruction. Write a response that appropriately completes the request.",
     "response_split": "### Response:",
     "prompt_begin": "### System:"
 }
