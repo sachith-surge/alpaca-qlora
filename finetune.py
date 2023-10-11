@@ -6,7 +6,7 @@ import fire
 import torch
 import transformers
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, LlamaTokenizerFast, RwkvForCausalLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, BitsAndBytesConfig, LlamaTokenizerFast, RwkvForCausalLM
 from peft import prepare_model_for_kbit_training
 
 from utils.smart_tokenizer import smart_tokenizer_and_embedding_resize
@@ -85,9 +85,9 @@ def print_trainable_parameters(model):
 
 def train(
     # model/data params
-    base_model: str = "",  # the only required argument
-    data_path: str = "yahma/alpaca-cleaned",
-    output_dir: str = "./lora-alpaca",
+    base_model: str = "google/flan-t5-small",
+    data_path: str = "", # required argument
+    output_dir: str = "results",
     device_map: str = "auto",
     # training hyperparams
     batch_size: int = 128,
@@ -98,11 +98,11 @@ def train(
     val_set_size: int = -1,
     # lora hyperparams
     lora_r: int = 8,
-    lora_alpha: int = 16,
-    lora_dropout: float = 0.05,
+    lora_alpha: int = 512,
+    lora_dropout: float = 0.01,
     lora_target_modules: List[str] = [
-        "q_proj",
-        "v_proj",
+        "q",
+        "v",
     ],
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
@@ -115,9 +115,6 @@ def train(
     wandb_log_model: str = "",  # options: false | true
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
     prompt_template_name: str = "alpaca_modified",  # The prompt template to use, will default to alpaca.
-    # experimental
-    use_landmark: bool = False,
-    use_rope_scaled: bool = False,
 ):
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
@@ -173,64 +170,18 @@ def train(
 
     if "rwkv" in base_model.lower():
         bnb_config.bnb_4bit_use_double_quant = False
+    
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        base_model,
+        quantization_config=bnb_config,
+        device_map=device_map,
+        trust_remote_code=True
+    )
 
-    if use_landmark:
-        from experiments.landmark import LlamaForCausalLM
-        model = LlamaForCausalLM.from_pretrained(
-            base_model,
-            quantization_config=bnb_config,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(base_model,
-                                                  model_max_length=3000,
-                                                  padding_side="right",
-                                                  use_fast=False)
-
-        mem_token = "<landmark>"
-        special_tokens_dict = dict()
-        if tokenizer.pad_token is None:
-            special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
-        if tokenizer.eos_token is None:
-            special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
-        if tokenizer.bos_token is None:
-            special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
-        if tokenizer.unk_token is None:
-            special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
-        special_tokens_dict["additional_special_tokens"] = [mem_token]
-
-        smart_tokenizer_and_embedding_resize(
-            special_tokens_dict=special_tokens_dict,
-            tokenizer=tokenizer,
-            model=model,
-        )
-
-        mem_id = tokenizer.convert_tokens_to_ids(mem_token)
-        model.set_mem_id(mem_id)
-    elif use_rope_scaled:
-        from experiments.llama_rope_scaled_monkey_patch import replace_llama_rope_with_scaled_rope
-        replace_llama_rope_with_scaled_rope()
-
-        from transformers import  LlamaForCausalLM
-
-        model = LlamaForCausalLM.from_pretrained(
-            base_model,
-            quantization_config=bnb_config,
-            device_map=device_map,
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
-
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            quantization_config=bnb_config,
-            device_map=device_map,
-            trust_remote_code=True
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained(
+        base_model, 
+        add_special_tokens=False
+    )
     
     if tokenizer._pad_token is None:
         smart_tokenizer_and_embedding_resize(
@@ -238,26 +189,15 @@ def train(
             tokenizer=tokenizer,
             model=model,
         )
-    if isinstance(tokenizer, LlamaTokenizerFast):
-        # LLaMA tokenizer may not have correct special tokens set.
-        # Check and add them if missing to prevent them from being parsed into different tokens.
-        # Note that these are present in the vocabulary. 
-        # Note also that `model.config.pad_token_id` is 0 which corresponds to `<unk>` token.
-        tokenizer.eos_token_id = model.config.eos_token_id
-        tokenizer.pad_token_id = model.config.pad_token_id
-        if hasattr(model.config, 'unk_token_id'):
-            tokenizer.unk_token_id = model.config.unk_token_id
-        else:
-            tokenizer.unk_token_id = tokenizer.pad_token_id
             
 
     #tokenizer.padding_side = "left"  # Allow batched inference
 
-    def tokenize(prompt, add_eos_token=True):
+    def tokenize(data_point, add_eos_token=True):
         # there's probably a way to do this with the tokenizer settings
         # but again, gotta move fast
         result = tokenizer(
-            prompt,
+            data_point['input'],
             truncation=True,
             max_length=cutoff_len,
             padding=False,
@@ -271,41 +211,24 @@ def train(
             result["input_ids"].append(tokenizer.eos_token_id)
             result["attention_mask"].append(1)
 
-        result["labels"] = result["input_ids"].copy()
+        result["labels"] = tokenizer.encode(
+            data_point['label'],
+            return_tensors="pt"
+        )
 
         return result
 
-    def generate_and_tokenize_prompt(data_point):
-        full_prompt = prompter.generate_prompt(
+    def generate_and_tokenize(data_point):
+        model_inputs = prompter.generate_prompt(
             system="",
             instruction=data_point["instruction"],
             label=data_point["response"],
         )
-        tokenized_full_prompt = tokenize(full_prompt)
-        # if not train_on_inputs:
-        #     user_prompt = prompter.generate_prompt(
-        #         data_point["instruction"], data_point["input"]
-        #     )
-        #     tokenized_user_prompt = tokenize(
-        #         user_prompt, add_eos_token=add_eos_token
-        #     )
-        #     user_prompt_len = len(tokenized_user_prompt["input_ids"])
+        tokenized_data_point_with_prompt = tokenize(model_inputs)
+        
+        return tokenized_data_point_with_prompt
 
-        #     if add_eos_token:
-        #         user_prompt_len -= 1
-
-        #     tokenized_full_prompt["labels"] = [
-        #         -100
-        #     ] * user_prompt_len + tokenized_full_prompt["labels"][
-        #         user_prompt_len:
-        #     ]  # could be sped up, probably
-        return tokenized_full_prompt
-
-    if isinstance(model, RwkvForCausalLM):
-        use_gradient_checkpointing=False
-    else:
-        use_gradient_checkpointing=True
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
     config = LoraConfig(
         r=lora_r,
@@ -313,7 +236,7 @@ def train(
         target_modules=lora_target_modules,
         lora_dropout=lora_dropout,
         bias="none",
-        task_type="CAUSAL_LM",
+        task_type="SEQ_2_SEQ_LM",
     )
     model = get_peft_model(model, config)
 
@@ -350,13 +273,13 @@ def train(
             test_size=val_set_size, shuffle=True, seed=42
         )
         train_data = (
-            train_val["train"].shuffle().map(generate_and_tokenize_prompt)
+            train_val["train"].shuffle().map(generate_and_tokenize)
         )
         val_data = (
-            train_val["test"].shuffle().map(generate_and_tokenize_prompt)
+            train_val["test"].shuffle().map(generate_and_tokenize)
         )
     else:
-        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
+        train_data = data["train"].shuffle().map(generate_and_tokenize)
         val_data = None
 
     if not ddp and torch.cuda.device_count() > 1:
@@ -391,7 +314,7 @@ def train(
             run_name=wandb_run_name if use_wandb else None,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+            tokenizer=tokenizer, model=model, padding=True, label_pad_token_id=-100, return_tensors="pt"
         ),
         callbacks=[SavePeftModelCallback]
     )

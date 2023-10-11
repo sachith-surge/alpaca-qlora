@@ -36,17 +36,23 @@ class Prompter(object):
         if not system:
             system = self.template['default_system_prompt']
 
-        res = self.template["prompt"].format(
+        input = self.template["prompt"].format(
             system=system,
             instruction=instruction
         )
+
+        if self._verbose:
+            print(inputs)
         
         if label:
-            res = f"{res}{label}"
-        if self._verbose:
-            print(res)
-
-        return res
+            return {
+                "input": input,
+                "label": label
+            }
+        else:
+            return {
+                "input": inputs
+            }
 
     def get_response(self, output: str) -> str:
         return output \
