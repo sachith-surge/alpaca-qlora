@@ -213,7 +213,8 @@ def train(
 
         result["labels"] = tokenizer.encode(
             data_point['label'],
-            return_tensors="pt"
+            truncation=True,
+            max_length=512
         )
 
         return result
@@ -297,7 +298,7 @@ def train(
             warmup_steps=100,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
-            bf16=True,
+            bf16=False,
             logging_steps=10,
             optim="paged_adamw_8bit",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
@@ -314,7 +315,7 @@ def train(
             run_name=wandb_run_name if use_wandb else None,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
-            tokenizer=tokenizer, model=model, padding=True, label_pad_token_id=-100, return_tensors="pt"
+            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True, label_pad_token_id=-100
         ),
         callbacks=[SavePeftModelCallback]
     )
