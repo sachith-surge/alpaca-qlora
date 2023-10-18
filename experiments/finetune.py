@@ -6,8 +6,12 @@ import fire
 import torch
 import transformers
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, BitsAndBytesConfig, LlamaTokenizerFast, RwkvForCausalLM
-from peft import prepare_model_for_kbit_training
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # get the absolute path of the parent directory
+sys.path.append(parent_dir)
 
 from utils.smart_tokenizer import smart_tokenizer_and_embedding_resize
 """
@@ -15,15 +19,6 @@ Unused imports:
 import torch.nn as nn
 import bitsandbytes as bnb
 """
-
-from peft import (
-    LoraConfig,
-    get_peft_model,
-    get_peft_model_state_dict,
-    prepare_model_for_int8_training,
-    set_peft_model_state_dict,
-)
-from transformers import LlamaForCausalLM, LlamaTokenizer
 
 from utils.prompter import Prompter
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
@@ -57,13 +52,6 @@ class SavePeftModelCallback(transformers.TrainerCallback):
         self.save_model(args, state, kwargs)
 
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16
-)
-
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
@@ -96,14 +84,6 @@ def train(
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
     val_set_size: int = -1,
-    # lora hyperparams
-    lora_r: int = 8,
-    lora_alpha: int = 512,
-    lora_dropout: float = 0.01,
-    lora_target_modules: List[str] = [
-        "q",
-        "v",
-    ],
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
@@ -114,7 +94,7 @@ def train(
     wandb_watch: str = "",  # options: false | gradients | all
     wandb_log_model: str = "",  # options: false | true
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
-    prompt_template_name: str = "alpaca_modified",  # The prompt template to use, will default to alpaca.
+    prompt_template_name: str = "flan",  # The prompt template to use, will default to alpaca.
 ):
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
@@ -128,10 +108,6 @@ def train(
             f"learning_rate: {learning_rate}\n"
             f"cutoff_len: {cutoff_len}\n"
             f"val_set_size: {val_set_size if val_set_size >= 0 else 'Calculated later based on dataset size'}\n"
-            f"lora_r: {lora_r}\n"
-            f"lora_alpha: {lora_alpha}\n"
-            f"lora_dropout: {lora_dropout}\n"
-            f"lora_target_modules: {lora_target_modules}\n"
             f"train_on_inputs: {train_on_inputs}\n"
             f"add_eos_token: {add_eos_token}\n"
             f"group_by_length: {group_by_length}\n"
@@ -167,13 +143,9 @@ def train(
         os.environ["WANDB_WATCH"] = wandb_watch
     if len(wandb_log_model) > 0:
         os.environ["WANDB_LOG_MODEL"] = wandb_log_model
-
-    if "rwkv" in base_model.lower():
-        bnb_config.bnb_4bit_use_double_quant = False
     
     model = AutoModelForSeq2SeqLM.from_pretrained(
         base_model,
-        quantization_config=bnb_config,
         device_map=device_map,
         trust_remote_code=True
     )
@@ -229,18 +201,6 @@ def train(
         
         return tokenized_data_point_with_prompt
 
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-
-    config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        target_modules=lora_target_modules,
-        lora_dropout=lora_dropout,
-        bias="none",
-        task_type="SEQ_2_SEQ_LM",
-    )
-    model = get_peft_model(model, config)
-
     if data_path.endswith(".json") or data_path.endswith(".jsonl"):
         data = load_dataset("json", data_files=data_path)
     else:
@@ -248,25 +208,8 @@ def train(
     
     val_set_size = int(0.2 * data['train'].num_rows) if val_set_size < 0 else val_set_size
 
-    if resume_from_checkpoint:
-        # Check the available weights and load them
-        checkpoint_name = os.path.join(
-            resume_from_checkpoint, "pytorch_model.bin"
-        )  # Full checkpoint
-        if not os.path.exists(checkpoint_name):
-            checkpoint_name = os.path.join(
-                resume_from_checkpoint, "adapter_model.bin"
-            )  # only LoRA model - LoRA config above has to fit
-            resume_from_checkpoint = (
-                False  # So the trainer won't try loading its state
-            )
-        # The two files above have a different name depending on how they were saved, but are actually the same.
-        if os.path.exists(checkpoint_name):
-            print(f"Restarting from {checkpoint_name}")
-            adapters_weights = torch.load(checkpoint_name)
-            set_peft_model_state_dict(model, adapters_weights)
-        else:
-            print(f"Checkpoint {checkpoint_name} not found")
+    for parameter in model.parameters():
+        parameter.requires_grad = True
 
     print_trainable_parameters(model) # Be more transparent about the % of trainable params.
     if val_set_size > 0:
@@ -283,11 +226,6 @@ def train(
         train_data = data["train"].shuffle().map(generate_and_tokenize)
         val_data = None
 
-    if not ddp and torch.cuda.device_count() > 1:
-        # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
-        model.is_parallelizable = True
-        model.model_parallel = True
-
     trainer = transformers.Trainer(
         model=model,
         train_dataset=train_data,
@@ -300,19 +238,20 @@ def train(
             learning_rate=learning_rate,
             bf16=False,
             logging_steps=10,
-            optim="paged_adamw_8bit",
+            optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
             eval_steps=10 if val_set_size > 0 else None,
             save_steps=10,
             output_dir=output_dir,
-            # save_total_limit=3,
+            save_total_limit=10,
             #load_best_model_at_end=True if val_set_size > 0 else False,
             load_best_model_at_end=True,
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
+            resume_from_checkpoint=resume_from_checkpoint
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True, label_pad_token_id=-100

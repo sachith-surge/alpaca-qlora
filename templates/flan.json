@@ -1,0 +1,4 @@
+{
+    "description": "Flan Prompt Template",
+    "prompt": "{instruction}"
+}
